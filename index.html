@@ -493,7 +493,7 @@ body {
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 'use strict';
-const STORE_KEY = 'sd_scorer_v4';
+const STORE_KEY = 'sd_scorer_v5_fixed';
 const $ = id => document.getElementById(id);
 
 const state = {
@@ -617,9 +617,10 @@ function updateViewer() {
 function updateSidebar() {
   if (!state.images.length) return;
   const idx = state.current;
-  const img = state.images[idx];
   const pd = $('prompt-display');
-  const p = state.prompts[idx + 1] || state.prompts[img.name];
+  // ★ FIX: 画像インデックスから計算したプロンプト番号（1始まり）でアクセス
+  const promptIdx = idx + 1;
+  const p = state.prompts[promptIdx];
   if (p) { pd.textContent = p; pd.classList.remove('empty'); }
   else { pd.textContent = 'プロンプトが見つかりません'; pd.classList.add('empty'); }
 }
@@ -640,13 +641,13 @@ function updateResultsTable() {
     return;
   }
   const rows = entries.sort((a,b) => +a[0] - +b[0]).map(([i, v]) => {
-    const img = state.images[+i];
-    const idx = +i + 1;
-    const p = state.prompts[idx] || state.prompts[img?.name] || '-';
+    const imgIdx = +i;
+    const promptIdx = imgIdx + 1;  // ★ FIX: 1始まりのプロンプト番号
+    const p = state.prompts[promptIdx] || '-';
     const short = p.length > 45 ? p.slice(0, 45) + '…' : p;
-    const isCurrent = +i === state.current ? 'current' : '';
+    const isCurrent = imgIdx === state.current ? 'current' : '';
     const tag = v === 'ok' ? '<span class="tag-ok">OK</span>' : '<span class="tag-ng">NG</span>';
-    return `<tr class="${isCurrent}"><td style="color:var(--text3);min-width:22px">#${idx}</td><td style="max-width:140px">${short}</td><td>${tag}</td></tr>`;
+    return `<tr class="${isCurrent}"><td style="color:var(--text3);min-width:22px">#${promptIdx}</td><td style="max-width:140px">${short}</td><td>${tag}</td></tr>`;
   }).join('');
   area.innerHTML = `<table class="rtable"><thead><tr><th>#</th><th>プロンプト</th><th>結果</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
@@ -660,8 +661,8 @@ function saveResults() {
   const grouped = {};
   Object.entries(state.scores).forEach(([i, v]) => {
     const imgIdx = +i;
-    const img = state.images[imgIdx];
-    const p = state.prompts[imgIdx + 1] || state.prompts[img?.name] || '';
+    const promptIdx = imgIdx + 1;  // ★ FIX: 1始まりのプロンプト番号
+    const p = state.prompts[promptIdx] || '';
     const grp = Math.floor(imgIdx / state.batchCount);
     if (!grouped[grp]) grouped[grp] = { seq: grp + 1, prompt: p, total: 0, ng: 0 };
     grouped[grp].total++;
@@ -721,8 +722,11 @@ $('excel-input').onchange = function() {
       const data = XLSX.utils.sheet_to_json(ws, {header:1});
       state.prompts = {};
       data.forEach(row => {
-        if (row[0] !== undefined && row[1] !== undefined)
-          state.prompts[row[0]] = String(row[1]);
+        if (row[0] !== undefined && row[1] !== undefined) {
+          // ★ FIX: キーを整数に統一（1.0 → 1 に統一）
+          const key = Math.round(Number(row[0]));
+          state.prompts[key] = String(row[1]);
+        }
       });
       setStatus(`${Object.keys(state.prompts).length}件のプロンプトを読み込みました`);
       saveToStorage(); updateAll();
