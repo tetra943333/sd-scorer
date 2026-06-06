@@ -576,28 +576,46 @@ function restoreSession(saved) {
   return true;
 }
 
-// ★ EXIF からプロンプト抽出
+// ★ EXIF からプロンプト抽出（UserComment タグ）
 async function extractPromptFromImage(blob) {
   try {
     const buffer = await blob.arrayBuffer();
     const uint8 = new Uint8Array(buffer);
-    const exifData = piexif.load(uint8);
     
-    if (exifData.Exif && exifData.Exif[piexif.ExifIFD.UserComment]) {
-      const comment = exifData.Exif[piexif.ExifIFD.UserComment];
-      let text = '';
-      if (typeof comment === 'string') text = comment;
-      else if (comment instanceof Uint8Array) {
-        text = new TextDecoder().decode(comment);
+    try {
+      const exifData = piexif.load(uint8);
+      
+      if (exifData.Exif && exifData.Exif[37510]) {  // 37510 = UserComment タグ
+        let comment = exifData.Exif[37510];
+        let text = '';
+        
+        if (typeof comment === 'string') {
+          text = comment;
+        } else if (comment instanceof Uint8Array || Array.isArray(comment)) {
+          const arr = new Uint8Array(comment);
+          
+          // UNICODE エンコーディング確認
+          if (arr[0] === 0x55 && arr[1] === 0x4E && arr[2] === 0x49 && arr[3] === 0x43 && arr[8] === 0x00) {
+            // "UNICODE\x00\x00" プレフィックス（8バイト）をスキップして UTF-16 BE でデコード
+            text = new TextDecoder('utf-16-be').decode(arr.slice(8));
+          } else {
+            // 標準 UTF-8
+            text = new TextDecoder().decode(arr);
+          }
+        }
+        
+        if (text) {
+          // 最初の行がプロンプト（改行まで）
+          const promptLine = text.split('\n')[0];
+          if (promptLine && promptLine.length > 5) return promptLine;
+        }
       }
-      // JSON形式の場合
-      try {
-        const json = JSON.parse(text);
-        if (json.prompt) return json.prompt;
-      } catch(e) {}
-      return text;
+    } catch(e) {
+      console.warn('EXIF extraction failed:', e);
     }
-  } catch(e) {}
+  } catch(e) {
+    console.warn('Image processing error:', e);
+  }
   return null;
 }
 
