@@ -859,29 +859,85 @@ function updateAll() { updateViewer(); updateSidebar(); updateStats(); updateRes
 
 function saveResults() {
   if (!Object.keys(state.scores).length) { showToast('採点データがありません'); return; }
+  
+  // ★ ダイアログで保存形式を選択
+  const choice = confirm('ZIPファイルも分別して保存しますか？\n\nOK: Excel + ZIP（OK/NG分別）\nキャンセル: Excelのみ');
+  
   const grouped = {};
   Object.entries(state.scores).forEach(([i, v]) => {
     const imgIdx = +i;
     const seq = Math.floor(imgIdx / state.batchCount) + 1;
-    let p = state.prompts[seq];
-    if (!p) p = state.extractedPrompts[imgIdx];
-    p = p || '';
-    const grp = seq;
-    if (!grouped[grp]) grouped[grp] = { seq: grp, prompt: p, total: 0, ng: 0 };
-    grouped[grp].total++;
-    if (v === 'ng') grouped[grp].ng++;
+    if (!grouped[seq]) grouped[seq] = { total: 0, ng: 0 };
+    grouped[seq].total++;
+    if (v === 'ng') grouped[seq].ng++;
   });
-  const rows = [['#', 'プロンプト', 'NG率', 'NG数', '総数']];
-  Object.values(grouped).sort((a,b) => a.seq - b.seq).forEach(g => {
-    rows.push([g.seq, g.prompt, g.total > 0 ? Math.round(g.ng / g.total * 100) + '%' : '-', g.ng, g.total]);
+  
+  // Excel 生成
+  const rows = [['ファイル名', 'NG率']];
+  state.images.forEach((img, imgIdx) => {
+    const seq = Math.floor(imgIdx / state.batchCount) + 1;
+    const g = grouped[seq];
+    if (g) {
+      const ngRate = g.total > 0 ? Math.round(g.ng / g.total * 100) : 0;
+      rows.push([img.name, ngRate + '%']);
+    }
   });
+  
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [{wch:4},{wch:60},{wch:8},{wch:6},{wch:6}];
-  XLSX.utils.book_append_sheet(wb, ws, '採点結果');
-  const fname = (state.zipName || 'results').replace(/\.zip$/i,'') + '_scores.xlsx';
+  ws['!cols'] = [{wch:40},{wch:8}];
+  XLSX.utils.book_append_sheet(wb, ws, '分別用');
+  const fname = (state.zipName || 'results').replace(/\.zip$/i,'') + '_sort.xlsx';
   XLSX.writeFile(wb, fname, { bookType: 'xlsx', type: 'binary' });
-  showToast('保存: ' + fname);
+  showToast('Excel保存: ' + fname);
+  
+  // ★ ZIP も生成する場合
+  if (choice) {
+    showToast('ZIP を分別中...');
+    setTimeout(() => generateSortedZip(grouped), 100);
+  }
+}
+
+// ★ NG率で分別した ZIP を生成
+async function generateSortedZip(grouped) {
+  try {
+    const zip = new JSZip();
+    
+    // OK/NG フォルダを作成
+    const okFolder = zip.folder('OK');
+    const ngFolder = zip.folder('NG');
+    
+    let addedCount = 0;
+    for (let imgIdx = 0; imgIdx < state.images.length; imgIdx++) {
+      const img = state.images[imgIdx];
+      const seq = Math.floor(imgIdx / state.batchCount) + 1;
+      const g = grouped[seq];
+      
+      if (g) {
+        const ngRate = g.total > 0 ? Math.round(g.ng / g.total * 100) : 0;
+        const folder = ngRate < 50 ? okFolder : ngFolder;
+        
+        // blob をフォルダに追加
+        const response = await fetch(img.url);
+        const blob = await response.blob();
+        folder.file(img.name, blob);
+        addedCount++;
+      }
+    }
+    
+    // ZIP 生成＆ダウンロード
+    const zipBlob = await zip.generateAsync({type: 'blob'});
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(zipBlob);
+    const zipFname = (state.zipName || 'results').replace(/\.zip$/i,'') + '_sorted.zip';
+    link.download = zipFname;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    
+    showToast(`ZIP保存: ${zipFname} (${addedCount}枚)`);
+  } catch(e) {
+    showToast('ZIP 生成エラー: ' + e.message);
+  }
 }
 
 $('btn-load-zip').onclick = () => $('zip-input').click();
