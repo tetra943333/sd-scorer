@@ -76,8 +76,8 @@ body {
   height: 40px;
   border-radius: 8px;
   border: none;
-  background: rgba(255,255,255,.15);
-  color: var(--text);
+  background: linear-gradient(135deg, var(--accent2), #60a5fa);
+  color: #fff;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -85,8 +85,9 @@ body {
   font-size: 20px;
   transition: all .15s;
   backdrop-filter: blur(8px);
+  font-weight: 600;
 }
-.menu-btn:active { background: rgba(255,255,255,.25); }
+.menu-btn:active { opacity: .85; transform: scale(0.95); }
 .img-counter {
   position: absolute;
   top: 50%;
@@ -122,8 +123,8 @@ body {
   width: 48px;
   height: 48px;
   border-radius: 8px;
-  border: 1.5px solid rgba(255,255,255,.2);
-  background: rgba(0,0,0,.3);
+  border: 2px solid var(--text);
+  background: rgba(0,0,0,.2);
   color: var(--text);
   cursor: pointer;
   display: flex;
@@ -132,10 +133,13 @@ body {
   font-size: 24px;
   transition: all .2s;
   backdrop-filter: blur(8px);
+  font-weight: 600;
 }
 .nav-arrow:active {
-  background: rgba(255,255,255,.1);
-  transform: scale(1.05);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  transform: scale(1.08);
 }
 
 .verdict-circle {
