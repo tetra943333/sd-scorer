@@ -504,7 +504,6 @@ body {
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/piexifjs@0.0.10/piexif.min.js"></script>
 <script>
 'use strict';
 const STORE_KEY = 'sd_scorer_v7_final';
@@ -576,42 +575,109 @@ function restoreSession(saved) {
   return true;
 }
 
-// ★ EXIF からプロンプト抽出（UserComment タグ）
+// ★ PNG チャンク解析（base64-js使用）
+function extractPromptFromPNG(uint8) {
+  try {
+    // PNG シグネチャ確認
+    if (uint8[0] !== 0x89 || uint8[1] !== 0x50) return null;
+    
+    let offset = 8;  // PNG シグネチャをスキップ
+    
+    while (offset < uint8.length - 8) {
+      // チャンク長（4バイト、ビッグエンディアン）
+      const length = (uint8[offset] << 24) | (uint8[offset+1] << 16) | 
+                     (uint8[offset+2] << 8) | uint8[offset+3];
+      
+      // チャンクタイプ（4バイト）
+      const chunkType = String.fromCharCode(uint8[offset+4], uint8[offset+5], 
+                                             uint8[offset+6], uint8[offset+7]);
+      
+      offset += 8;
+      
+      if (chunkType === 'tEXt') {
+        // テキストチャンク：キー\0値
+        const chunkData = uint8.slice(offset, offset + length);
+        const text = new TextDecoder().decode(chunkData);
+        const nullIdx = text.indexOf('\0');
+        
+        if (nullIdx > -1) {
+          const key = text.substring(0, nullIdx);
+          const value = text.substring(nullIdx + 1);
+          
+          if (key === 'parameters') {
+            return value;  // JSON文字列
+          }
+        }
+      }
+      
+      offset += length + 4;  // チャンクデータ + CRC
+    }
+  } catch(e) {
+    console.warn('PNG parsing error:', e);
+  }
+  return null;
+}
+
+// ★ JPG メタデータ抽出（Exif APP1 から直接JSON抽出）
+function extractPromptFromJPG(uint8) {
+  try {
+    // JPG マーカー確認
+    if (uint8[0] !== 0xFF || uint8[1] !== 0xD8) return null;
+    
+    let offset = 2;
+    
+    while (offset < uint8.length - 8) {
+      if (uint8[offset] !== 0xFF) {
+        offset++;
+        continue;
+      }
+      
+      const marker = uint8[offset + 1];
+      const length = (uint8[offset + 2] << 8) | uint8[offset + 3];
+      
+      // APP1 マーカー（EXIF）
+      if (marker === 0xE1) {
+        const appData = uint8.slice(offset + 4, offset + 4 + length - 2);
+        const appText = new TextDecoder().decode(appData);
+        
+        // "Exif\0\0" をスキップ
+        if (appText.startsWith('Exif')) {
+          const exifStart = appText.indexOf('{');
+          if (exifStart > -1) {
+            try {
+              const jsonStr = appText.substring(exifStart);
+              const jsonEnd = jsonStr.lastIndexOf('}');
+              const json = JSON.parse(jsonStr.substring(0, jsonEnd + 1));
+              if (json.prompt) return json.prompt;
+            } catch(e) {}
+          }
+        }
+      }
+      
+      offset += length + 2;
+    }
+  } catch(e) {
+    console.warn('JPG parsing error:', e);
+  }
+  return null;
+}
+
+// ★ EXIF からプロンプト抽出（JPG/PNG両対応）
 async function extractPromptFromImage(blob) {
   try {
     const buffer = await blob.arrayBuffer();
     const uint8 = new Uint8Array(buffer);
     
-    try {
-      const exifData = piexif.load(uint8);
-      
-      if (exifData.Exif && exifData.Exif[37510]) {  // 37510 = UserComment タグ
-        let comment = exifData.Exif[37510];
-        let text = '';
-        
-        if (typeof comment === 'string') {
-          text = comment;
-        } else if (comment instanceof Uint8Array || Array.isArray(comment)) {
-          const arr = new Uint8Array(comment);
-          
-          // UNICODE エンコーディング確認
-          if (arr[0] === 0x55 && arr[1] === 0x4E && arr[2] === 0x49 && arr[3] === 0x43 && arr[8] === 0x00) {
-            // "UNICODE\x00\x00" プレフィックス（8バイト）をスキップして UTF-16 BE でデコード
-            text = new TextDecoder('utf-16-be').decode(arr.slice(8));
-          } else {
-            // 標準 UTF-8
-            text = new TextDecoder().decode(arr);
-          }
-        }
-        
-        if (text) {
-          // 最初の行がプロンプト（改行まで）
-          const promptLine = text.split('\n')[0];
-          if (promptLine && promptLine.length > 5) return promptLine;
-        }
-      }
-    } catch(e) {
-      console.warn('EXIF extraction failed:', e);
+    // PNG チェック
+    if (uint8[0] === 0x89 && uint8[1] === 0x50) {
+      const prompt = extractPromptFromPNG(uint8);
+      if (prompt) return prompt;
+    }
+    
+    // JPG チェック
+    if (uint8[0] === 0xFF && uint8[1] === 0xD8) {
+      const prompt = extractPromptFromJPG(uint8);
+      if (prompt) return prompt;
     }
   } catch(e) {
     console.warn('Image processing error:', e);
