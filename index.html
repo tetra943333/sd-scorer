@@ -76,7 +76,7 @@ body {
   height: 40px;
   border-radius: 8px;
   border: none;
-  background: rgba(255,255,255,.08);
+  background: rgba(255,255,255,.15);
   color: var(--text);
   cursor: pointer;
   display: flex;
@@ -86,15 +86,20 @@ body {
   transition: all .15s;
   backdrop-filter: blur(8px);
 }
-.menu-btn:active { background: rgba(255,255,255,.15); }
+.menu-btn:active { background: rgba(255,255,255,.25); }
 .img-counter {
-  font-size: 12px;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 13px;
   color: var(--text);
   background: rgba(0,0,0,.5);
-  padding: 4px 12px;
+  padding: 6px 14px;
   border-radius: 20px;
   backdrop-filter: blur(8px);
   white-space: nowrap;
+  pointer-events: none;
 }
 
 .action-overlay {
@@ -105,13 +110,33 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 16px;
+  gap: 12px;
   padding: 20px 16px;
   z-index: 10;
   background: linear-gradient(180deg, transparent 0%, rgba(0,0,0,.5) 100%);
   pointer-events: none;
 }
 .action-overlay > button { pointer-events: auto; }
+
+.nav-arrow {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  border: 1.5px solid rgba(255,255,255,.2);
+  background: rgba(0,0,0,.3);
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  transition: all .2s;
+  backdrop-filter: blur(8px);
+}
+.nav-arrow:active {
+  background: rgba(255,255,255,.1);
+  transform: scale(1.05);
+}
 
 .verdict-circle {
   width: 64px;
@@ -354,20 +379,33 @@ body {
   pointer-events: auto;
 }
 
-.status-bar {
+.toast {
   position: fixed;
-  bottom: 12px;
-  right: 12px;
-  font-size: 11px;
-  color: var(--text3);
-  background: rgba(0,0,0,.6);
-  padding: 6px 10px;
+  bottom: 20px;
+  right: 16px;
+  font-size: 12px;
+  color: var(--text);
+  background: rgba(0,0,0,.7);
+  padding: 8px 14px;
   border-radius: 20px;
   backdrop-filter: blur(8px);
-  max-width: 200px;
-  text-align: right;
-  z-index: 8;
+  border: 1px solid var(--border);
+  z-index: 50;
+  animation: slideIn .3s ease-out;
+  pointer-events: none;
 }
+.toast.hide {
+  animation: slideOut .3s ease-in;
+}
+@keyframes slideIn {
+  from { transform: translateX(400px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes slideOut {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(400px); opacity: 0; }
+}
+
 .autosave-dot {
   width: 5px;
   height: 5px;
@@ -401,8 +439,10 @@ body {
 </div>
 
 <div class="action-overlay">
+  <button class="nav-arrow" id="btn-prev" title="前の画像"><i class="ti ti-chevron-left"></i></button>
   <button class="verdict-circle ng" id="btn-ng-circle" title="NG (N キー)"><i class="ti ti-circle-x"></i></button>
   <button class="verdict-circle ok" id="btn-ok-circle" title="OK (O キー)"><i class="ti ti-circle-check"></i></button>
+  <button class="nav-arrow" id="btn-next" title="次の画像"><i class="ti ti-chevron-right"></i></button>
 </div>
 
 <div class="overlay-bg" id="overlay-bg"></div>
@@ -453,25 +493,37 @@ body {
   </div>
 </div>
 
-<div class="status-bar" id="status-bar">
-  <span class="autosave-dot" id="autosave-dot"></span><span id="status-msg">ファイル読込待機</span>
-</div>
+<div class="toast" id="toast" style="display:none"></div>
 
 <input type="file" id="zip-input" accept=".zip" style="display:none">
 <input type="file" id="excel-input" accept=".xlsx,.xls,.csv" style="display:none">
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/piexifjs@0.0.10/piexif.min.js"></script>
 <script>
 'use strict';
-const STORE_KEY = 'sd_scorer_v6_fixed';
+const STORE_KEY = 'sd_scorer_v7_final';
 const $ = id => document.getElementById(id);
 
 const state = {
   images: [], current: 0, prompts: {}, scores: {},
   batchCount: 1, zipName: '', pendingReset: false,
-  touchStartX: 0, touchStartTime: 0
+  touchStartX: 0, touchStartTime: 0,
+  extractedPrompts: {}
 };
+
+// ★ トースト通知（フローティング）
+function showToast(msg, duration = 3000) {
+  const toast = $('toast');
+  toast.textContent = msg;
+  toast.style.display = 'block';
+  toast.classList.remove('hide');
+  setTimeout(() => {
+    toast.classList.add('hide');
+    setTimeout(() => toast.style.display = 'none', 300);
+  }, duration);
+}
 
 $('menu-btn').onclick = () => {
   $('sidebar').classList.add('open');
@@ -488,11 +540,14 @@ function saveToStorage() {
       scores: state.scores, batchCount: state.batchCount,
       current: state.current, zipName: state.zipName,
       imageNames: state.images.map(i => i.name),
-      prompts: state.prompts
+      prompts: state.prompts,
+      extractedPrompts: state.extractedPrompts
     }));
-    const dot = $('autosave-dot');
-    dot.classList.add('show');
-    setTimeout(() => dot.classList.remove('show'), 1800);
+    const dot = document.querySelector('.autosave-dot');
+    if (dot) {
+      dot.classList.add('show');
+      setTimeout(() => dot.classList.remove('show'), 1800);
+    }
   } catch(e) {}
 }
 
@@ -507,13 +562,39 @@ function restoreSession(saved) {
   if (!match) return false;
   state.scores = saved.scores || {};
   if (!Object.keys(state.prompts).length && saved.prompts) state.prompts = saved.prompts;
+  if (saved.extractedPrompts) state.extractedPrompts = saved.extractedPrompts;
   state.batchCount = saved.batchCount || 1;
   document.querySelectorAll('.batch-btn').forEach(b =>
     b.classList.toggle('active', +b.dataset.val === state.batchCount));
   const firstUnscored = state.images.findIndex((_,i) => state.scores[i] === undefined);
   state.current = firstUnscored >= 0 ? firstUnscored : state.images.length - 1;
-  setStatus(`前回の続きから再開 (${Object.keys(state.scores).length}/${state.images.length})`);
+  showToast(`前回の続きから再開 (${Object.keys(state.scores).length}/${state.images.length})`);
   return true;
+}
+
+// ★ EXIF からプロンプト抽出
+async function extractPromptFromImage(blob) {
+  try {
+    const buffer = await blob.arrayBuffer();
+    const uint8 = new Uint8Array(buffer);
+    const exifData = piexif.load(uint8);
+    
+    if (exifData.Exif && exifData.Exif[piexif.ExifIFD.UserComment]) {
+      const comment = exifData.Exif[piexif.ExifIFD.UserComment];
+      let text = '';
+      if (typeof comment === 'string') text = comment;
+      else if (comment instanceof Uint8Array) {
+        text = new TextDecoder().decode(comment);
+      }
+      // JSON形式の場合
+      try {
+        const json = JSON.parse(text);
+        if (json.prompt) return json.prompt;
+      } catch(e) {}
+      return text;
+    }
+  } catch(e) {}
+  return null;
 }
 
 function hasScoreAfter(idx) {
@@ -585,9 +666,12 @@ function updateSidebar() {
   if (!state.images.length) return;
   const idx = state.current;
   const pd = $('prompt-display');
-  // ★ FIX: imgIdx→promptIdx の計算を batchCount で割る
   const promptIdx = Math.floor(idx / state.batchCount) + 1;
-  const p = state.prompts[promptIdx];
+  
+  // 優先順位: Excelから読んだ > EXIF抽出 > 見つかりません
+  let p = state.prompts[promptIdx];
+  if (!p) p = state.extractedPrompts[idx];
+  
   if (p) { pd.textContent = p; pd.classList.remove('empty'); }
   else { pd.textContent = 'プロンプトが見つかりません'; pd.classList.add('empty'); }
 }
@@ -609,9 +693,10 @@ function updateResultsTable() {
   }
   const rows = entries.sort((a,b) => +a[0] - +b[0]).map(([i, v]) => {
     const imgIdx = +i;
-    // ★ FIX: imgIdx→promptIdx の計算を batchCount で割る
     const promptIdx = Math.floor(imgIdx / state.batchCount) + 1;
-    const p = state.prompts[promptIdx] || '-';
+    let p = state.prompts[promptIdx];
+    if (!p) p = state.extractedPrompts[imgIdx];
+    p = p || '-';
     const short = p.length > 45 ? p.slice(0, 45) + '…' : p;
     const isCurrent = imgIdx === state.current ? 'current' : '';
     const tag = v === 'ok' ? '<span class="tag-ok">OK</span>' : '<span class="tag-ng">NG</span>';
@@ -621,17 +706,17 @@ function updateResultsTable() {
 }
 
 function updateAll() { updateViewer(); updateSidebar(); updateStats(); updateResultsTable(); }
-function setStatus(msg) { $('status-msg').textContent = msg; }
 
 function saveResults() {
-  if (!Object.keys(state.scores).length) { setStatus('採点データがありません'); return; }
+  if (!Object.keys(state.scores).length) { showToast('採点データがありません'); return; }
   const grouped = {};
   Object.entries(state.scores).forEach(([i, v]) => {
     const imgIdx = +i;
-    // ★ FIX: imgIdx→seq の計算を batchCount で割る
     const seq = Math.floor(imgIdx / state.batchCount) + 1;
-    const p = state.prompts[seq] || '';
-    const grp = seq;  // seq そのものがグループ番号
+    let p = state.prompts[seq];
+    if (!p) p = state.extractedPrompts[imgIdx];
+    p = p || '';
+    const grp = seq;
     if (!grouped[grp]) grouped[grp] = { seq: grp, prompt: p, total: 0, ng: 0 };
     grouped[grp].total++;
     if (v === 'ng') grouped[grp].ng++;
@@ -646,35 +731,53 @@ function saveResults() {
   XLSX.utils.book_append_sheet(wb, ws, '採点結果');
   const fname = (state.zipName || 'results').replace(/\.zip$/i,'') + '_scores.xlsx';
   XLSX.writeFile(wb, fname, { bookType: 'xlsx', type: 'binary' });
-  setStatus('保存: ' + fname);
+  showToast('保存: ' + fname);
 }
 
 $('btn-load-zip').onclick = () => $('zip-input').click();
 $('zip-input').onchange = async function() {
   const file = this.files[0]; if (!file) return;
-  setStatus('ZIPを読み込み中...');
+  showToast('ZIPを読み込み中...');
   state.zipName = file.name;
   state.images.forEach(i => URL.revokeObjectURL(i.url));
   state.images = []; state.scores = {}; state.current = 0; state.pendingReset = false;
+  state.extractedPrompts = {};
   try {
     const zip = await JSZip.loadAsync(file);
     const imgExts = /\.(png|jpe?g|gif|webp)$/i;
     const files = Object.values(zip.files)
       .filter(f => !f.dir && imgExts.test(f.name))
       .sort((a,b) => a.name.localeCompare(b.name, undefined, {numeric:true}));
-    for (const f of files) {
+    
+    let extractedCount = 0;
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
       const blob = await f.async('blob');
       state.images.push({ name: f.name.split('/').pop(), url: URL.createObjectURL(blob) });
+      
+      // ★ EXIF からプロンプト抽出
+      const prompt = await extractPromptFromImage(blob);
+      if (prompt) {
+        state.extractedPrompts[i] = prompt;
+        extractedCount++;
+      }
     }
-    if (!state.images.length) { setStatus('ZIP内に画像が見つかりませんでした'); return; }
+    
+    if (!state.images.length) { showToast('ZIP内に画像が見つかりませんでした'); return; }
     $('btn-reset-all').style.display = 'inline-flex';
     const saved = loadFromStorage();
     const resumed = restoreSession(saved);
     updateAll();
-    if (!resumed) setStatus(`${state.images.length}枚の画像を読み込みました`);
+    if (!resumed) {
+      if (extractedCount > 0) {
+        showToast(`${state.images.length}枚読込, ${extractedCount}枚のプロンプトを抽出`);
+      } else {
+        showToast(`${state.images.length}枚の画像を読み込みました`);
+      }
+    }
     $('sidebar').classList.remove('open');
     $('overlay-bg').classList.remove('show');
-  } catch(e) { setStatus('ZIPの読み込みに失敗しました'); }
+  } catch(e) { showToast('ZIPの読み込みに失敗しました'); }
   this.value = '';
 };
 
@@ -690,14 +793,13 @@ $('excel-input').onchange = function() {
       state.prompts = {};
       data.forEach(row => {
         if (row[0] !== undefined && row[1] !== undefined) {
-          // ★ FIX: キーを整数に統一
           const key = Math.round(Number(row[0]));
           state.prompts[key] = String(row[1]);
         }
       });
-      setStatus(`${Object.keys(state.prompts).length}件のプロンプトを読み込みました`);
+      showToast(`${Object.keys(state.prompts).length}件のプロンプトを読み込みました`);
       saveToStorage(); updateAll();
-    } catch(ex) { setStatus('Excel読み込みエラー'); }
+    } catch(ex) { showToast('Excel読み込みエラー'); }
   };
   reader.readAsArrayBuffer(file);
   this.value = '';
@@ -705,12 +807,14 @@ $('excel-input').onchange = function() {
 
 $('btn-ok-circle').onclick = () => setScore('ok');
 $('btn-ng-circle').onclick = () => setScore('ng');
+$('btn-prev').onclick = () => navigate(-1);
+$('btn-next').onclick = () => navigate(1);
 $('btn-save').onclick = saveResults;
 $('btn-reset-all').onclick = () => {
   if (confirm('全ての採点データをリセットしますか？')) {
     state.scores = {}; state.current = 0;
     localStorage.removeItem(STORE_KEY);
-    setStatus('全リセットしました'); updateAll();
+    showToast('全リセットしました'); updateAll();
   }
 };
 
@@ -720,7 +824,7 @@ document.querySelectorAll('.batch-btn').forEach(btn => {
     this.classList.add('active');
     state.batchCount = +this.dataset.val;
     saveToStorage();
-    updateAll();  // ★ batchCount変更時にUIを再計算
+    updateAll();
   };
 });
 
