@@ -618,7 +618,7 @@ function extractPromptFromPNG(uint8) {
   return null;
 }
 
-// ★ JPG メタデータ抽出（Exif APP1 から直接JSON抽出）
+// ★ JPG メタデータ抽出（APP1 EXIF から UserComment タグを抽出）
 function extractPromptFromJPG(uint8) {
   try {
     // JPG マーカー確認
@@ -638,18 +638,80 @@ function extractPromptFromJPG(uint8) {
       // APP1 マーカー（EXIF）
       if (marker === 0xE1) {
         const appData = uint8.slice(offset + 4, offset + 4 + length - 2);
-        const appText = new TextDecoder().decode(appData);
         
-        // "Exif\0\0" をスキップ
-        if (appText.startsWith('Exif')) {
-          const exifStart = appText.indexOf('{');
-          if (exifStart > -1) {
-            try {
-              const jsonStr = appText.substring(exifStart);
-              const jsonEnd = jsonStr.lastIndexOf('}');
-              const json = JSON.parse(jsonStr.substring(0, jsonEnd + 1));
-              if (json.prompt) return json.prompt;
-            } catch(e) {}
+        // "Exif\0\0" をスキップして TIFF データを解析
+        if (appData[0] === 0x45 && appData[1] === 0x78) {  // 'E' 'x'
+          let tiffOffset = 6;  // "Exif\0\0" をスキップ
+          
+          // TIFF ヘッダー（MM or II）
+          const isBigEndian = appData[tiffOffset] === 0x4D && appData[tiffOffset+1] === 0x4D;
+          tiffOffset += 4;  // "MM\0*" または "II*\0"
+          
+          // IFD オフセット
+          let ifdOffset = isBigEndian 
+            ? (appData[tiffOffset] << 24) | (appData[tiffOffset+1] << 16) | 
+              (appData[tiffOffset+2] << 8) | appData[tiffOffset+3]
+            : appData[tiffOffset] | (appData[tiffOffset+1] << 8) | 
+              (appData[tiffOffset+2] << 16) | (appData[tiffOffset+3] << 24);
+          
+          ifdOffset += 6;  // "Exif\0\0" オフセット
+          
+          // IFD エントリ数
+          const numEntries = isBigEndian
+            ? (appData[ifdOffset] << 8) | appData[ifdOffset+1]
+            : appData[ifdOffset] | (appData[ifdOffset+1] << 8);
+          
+          ifdOffset += 2;
+          
+          // IFD エントリをスキャン（ユーザーコメント探索）
+          for (let i = 0; i < numEntries; i++) {
+            const entryOffset = ifdOffset + i * 12;
+            const tag = isBigEndian
+              ? (appData[entryOffset] << 8) | appData[entryOffset+1]
+              : appData[entryOffset] | (appData[entryOffset+1] << 8);
+            
+            // タグ 0x927C = ユーザーコメント（MakerNote）
+            // または 0x9000 = EXIF バージョン
+            // または直接テキストデータを探す
+            
+            if (tag === 0x927C || tag === 0x8825) {  // UserComment または Exif IFD
+              const fieldType = isBigEndian
+                ? (appData[entryOffset+2] << 8) | appData[entryOffset+3]
+                : appData[entryOffset+2] | (appData[entryOffset+3] << 8);
+              
+              const count = isBigEndian
+                ? (appData[entryOffset+4] << 24) | (appData[entryOffset+5] << 16) |
+                  (appData[entryOffset+6] << 8) | appData[entryOffset+7]
+                : appData[entryOffset+4] | (appData[entryOffset+5] << 8) |
+                  (appData[entryOffset+6] << 16) | (appData[entryOffset+7] << 24);
+              
+              let dataOffset = isBigEndian
+                ? (appData[entryOffset+8] << 24) | (appData[entryOffset+9] << 16) |
+                  (appData[entryOffset+10] << 8) | appData[entryOffset+11]
+                : appData[entryOffset+8] | (appData[entryOffset+9] << 8) |
+                  (appData[entryOffset+10] << 16) | (appData[entryOffset+11] << 24);
+              
+              if (count > 0) {
+                dataOffset += 6;  // "Exif\0\0" オフセット
+                const commentData = appData.slice(dataOffset, dataOffset + count);
+                
+                // UTF-16 BE デコード（"UNICODE\0\0" プレフィックス対応）
+                if (commentData[0] === 0x55 && commentData[1] === 0x4E) {  // 'U' 'N'
+                  // UNICODE プレフィックス（8バイト）をスキップ
+                  const promptData = commentData.slice(8);
+                  try {
+                    const prompt = new TextDecoder('utf-16-be').decode(promptData);
+                    if (prompt && prompt.length > 10) return prompt;
+                  } catch(e) {}
+                }
+                
+                // UTF-8 として試行
+                try {
+                  const prompt = new TextDecoder().decode(commentData);
+                  if (prompt && prompt.length > 10) return prompt;
+                } catch(e) {}
+              }
+            }
           }
         }
       }
