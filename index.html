@@ -861,53 +861,66 @@ function saveResults() {
   if (!Object.keys(state.scores).length) { showToast('採点データがありません'); return; }
   
   // ★ ダイアログで保存形式を選択
-  const choice = confirm('ZIPファイルも分別して保存しますか？\n\nOK: Excel + ZIP（OK/NG分別）\nキャンセル: Excelのみ');
+  const choice = confirm('OK画像をZIPで分別して保存しますか？\n\nOK: Excel + OK画像ZIP\nキャンセル: Excelのみ');
   
+  // プロンプト毎のNG率を計算
   const grouped = {};
   Object.entries(state.scores).forEach(([i, v]) => {
     const imgIdx = +i;
     const seq = Math.floor(imgIdx / state.batchCount) + 1;
-    if (!grouped[seq]) grouped[seq] = { total: 0, ng: 0 };
+    if (!grouped[seq]) grouped[seq] = { prompt: '', total: 0, ng: 0 };
     grouped[seq].total++;
     if (v === 'ng') grouped[seq].ng++;
   });
   
-  // Excel 生成
-  const rows = [['ファイル名', 'NG率']];
-  state.images.forEach((img, imgIdx) => {
-    const seq = Math.floor(imgIdx / state.batchCount) + 1;
-    const g = grouped[seq];
-    if (g) {
-      const ngRate = g.total > 0 ? Math.round(g.ng / g.total * 100) : 0;
-      rows.push([img.name, ngRate + '%']);
+  // プロンプト情報を埋める
+  Object.keys(grouped).forEach(seq => {
+    let p = state.prompts[seq];
+    if (!p) {
+      const firstImgIdx = (parseInt(seq) - 1) * state.batchCount;
+      p = state.extractedPrompts[firstImgIdx];
     }
+    grouped[seq].prompt = p || '';
+  });
+  
+  // ★ Excel：プロンプト毎のNG率（連番付き）
+  const excelRows = [['#', 'プロンプト', 'NG率']];
+  Object.values(grouped).sort((a, b) => {
+    const aSeq = Object.values(grouped).indexOf(a);
+    const bSeq = Object.values(grouped).indexOf(b);
+    return aSeq - bSeq;
+  }).forEach((g, idx) => {
+    const ngRate = g.total > 0 ? Math.round(g.ng / g.total * 100) : 0;
+    excelRows.push([idx + 1, g.prompt, ngRate + '%']);
   });
   
   const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [{wch:40},{wch:8}];
-  XLSX.utils.book_append_sheet(wb, ws, '分別用');
-  const fname = (state.zipName || 'results').replace(/\.zip$/i,'') + '_sort.xlsx';
+  const ws = XLSX.utils.aoa_to_sheet(excelRows);
+  ws['!cols'] = [{wch:4},{wch:60},{wch:8}];
+  XLSX.utils.book_append_sheet(wb, ws, 'プロンプト採点');
+  const fname = (state.zipName || 'results').replace(/\.zip$/i,'') + '_prompt_result.xlsx';
   XLSX.writeFile(wb, fname, { bookType: 'xlsx', type: 'binary' });
   showToast('Excel保存: ' + fname);
   
-  // ★ ZIP も生成する場合
+  // ★ ZIP も生成する場合（OK画像のみ）
   if (choice) {
-    showToast('ZIP を分別中...');
-    setTimeout(() => generateSortedZip(grouped), 100);
+    showToast('OK画像をZIPで分別中...');
+    setTimeout(() => generateOKOnlyZip(grouped), 100);
   }
 }
 
-// ★ NG率で分別した ZIP を生成
-async function generateSortedZip(grouped) {
+// ★ OK画像のみを ZIP に詰める
+async function generateOKOnlyZip(grouped) {
   try {
     const zip = new JSZip();
     
-    // OK/NG フォルダを作成
-    const okFolder = zip.folder('OK');
-    const ngFolder = zip.folder('NG');
+    // ★ 内部判定リスト（ファイル名|TRUE/FALSE）
+    const internalList = [['ファイル名', 'OK']];
     
-    let addedCount = 0;
+    let okCount = 0;
+    let ngCount = 0;
+    
+    // 各画像をプロンプト毎のNG率で判定
     for (let imgIdx = 0; imgIdx < state.images.length; imgIdx++) {
       const img = state.images[imgIdx];
       const seq = Math.floor(imgIdx / state.batchCount) + 1;
@@ -915,13 +928,20 @@ async function generateSortedZip(grouped) {
       
       if (g) {
         const ngRate = g.total > 0 ? Math.round(g.ng / g.total * 100) : 0;
-        const folder = ngRate < 50 ? okFolder : ngFolder;
+        const isOK = ngRate < 50;
         
-        // blob をフォルダに追加
-        const response = await fetch(img.url);
-        const blob = await response.blob();
-        folder.file(img.name, blob);
-        addedCount++;
+        // 内部リストに追加
+        internalList.push([img.name, isOK ? 'TRUE' : 'FALSE']);
+        
+        // NG率 < 50% のみ ZIP に追加
+        if (isOK) {
+          const response = await fetch(img.url);
+          const blob = await response.blob();
+          zip.file(img.name, blob);
+          okCount++;
+        } else {
+          ngCount++;
+        }
       }
     }
     
@@ -929,12 +949,12 @@ async function generateSortedZip(grouped) {
     const zipBlob = await zip.generateAsync({type: 'blob'});
     const link = document.createElement('a');
     link.href = URL.createObjectURL(zipBlob);
-    const zipFname = (state.zipName || 'results').replace(/\.zip$/i,'') + '_sorted.zip';
+    const zipFname = (state.zipName || 'results').replace(/\.zip$/i,'') + '_OK.zip';
     link.download = zipFname;
     link.click();
     URL.revokeObjectURL(link.href);
     
-    showToast(`ZIP保存: ${zipFname} (${addedCount}枚)`);
+    showToast(`ZIP保存: ${zipFname} (OK: ${okCount}枚, NG: ${ngCount}枚)`);
   } catch(e) {
     showToast('ZIP 生成エラー: ' + e.message);
   }
